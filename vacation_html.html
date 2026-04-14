@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vacation Accrual Calculator</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #0f0f0f; color: #f0ece4; font-family: Georgia, serif; min-height: 100vh; }
+  input[type=date], input[type=number], input[type=text] {
+    background: #1a1a1a; border: 1px solid #2e2e2e; border-radius: 6px;
+    color: #f0ece4; font-size: 14px; padding: 8px 11px; width: 100%;
+    font-family: Georgia, serif; outline: none; transition: border-color 0.2s;
+  }
+  input:focus { border-color: #c9a84c; }
+  button { cursor: pointer; font-family: Georgia, serif; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1a1a; }
+  ::-webkit-scrollbar-thumb { background: #2e2e2e; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+const C = {
+  bg: "#0f0f0f", surface: "#1a1a1a", card: "#1e1e1e", border: "#2e2e2e",
+  accent: "#c9a84c", accentDim: "#a07830", accentHover: "#d4b96a",
+  text: "#f0ece4", muted: "#888580", hint: "#555250",
+  danger: "#c0392b", dangerDim: "rgba(192,57,43,0.15)",
+};
+
+function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n); return d; }
+function isWeekday(d) { const w = d.getDay(); return w !== 0 && w !== 6; }
+function countWeekdays(s, e) {
+  let n = 0, cur = new Date(s); cur.setHours(0,0,0,0);
+  const end = new Date(e); end.setHours(0,0,0,0);
+  while (cur <= end) { if (isWeekday(cur)) n++; cur = addDays(cur, 1); }
+  return n;
+}
+function fmtDate(d) { return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"; }
+function toISO(d) { return d.toISOString().split("T")[0]; }
+function parseDate(s) { if (!s) return null; const d = new Date(s + "T00:00:00"); return isNaN(d.getTime()) ? null : d; }
+
+const STORAGE_KEY = "vac_accrual_v1";
+function load() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") || null; } catch { return null; } }
+function save(data) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {} }
+
+function TrashIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+    </svg>
+  );
+}
+
+function App() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const saved = load();
+
+  const [stubDate, setStubDate] = useState(saved?.stubDate || toISO(today));
+  const [stubHours, setStubHours] = useState(saved?.stubHours || "80");
+  const [annualHours, setAnnualHours] = useState(saved?.annualHours || "120");
+  const [vacations, setVacations] = useState(saved?.vacations || []);
+  const [newStart, setNewStart] = useState("");
+  const [newEnd, setNewEnd] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [removeHover, setRemoveHover] = useState(null);
+
+  useEffect(() => {
+    save({ stubDate, stubHours, annualHours, vacations });
+    setSavedFlash(true);
+    const t = setTimeout(() => setSavedFlash(false), 1200);
+    return () => clearTimeout(t);
+  }, [stubDate, stubHours, annualHours, vacations]);
+
+  const annual = parseFloat(annualHours) || 0;
+  const maxCap = annual * 1.5;
+  const weeklyRate = annual / 52;
+  const startBalance = parseFloat(stubHours) || 0;
+  const anchorDate = parseDate(stubDate) || today;
+
+  const result = useMemo(() => {
+    if (!annual) return null;
+    const vacEvents = vacations
+      .map(v => ({ ...v, startD: parseDate(v.start), endD: parseDate(v.end) }))
+      .filter(v => v.startD && v.endD && v.endD >= v.startD);
+
+    const vacMap = {};
+    for (const v of vacEvents) {
+      let cur = new Date(v.startD);
+      while (cur <= v.endD) {
+        if (isWeekday(cur)) { const k = toISO(cur); vacMap[k] = (vacMap[k] || 0) + 8; }
+        cur = addDays(cur, 1);
+      }
+    }
+
+    let balance = startBalance;
+    const points = [{ date: new Date(anchorDate), balance: parseFloat(balance.toFixed(2)) }];
+    const scanDays = 548;
+
+    for (let day = 1; day <= scanDays; day++) {
+      const cur = addDays(anchorDate, day);
+      balance += weeklyRate / 7;
+      if (vacMap[toISO(cur)]) { balance -= vacMap[toISO(cur)]; if (balance < 0) balance = 0; }
+      if (balance >= maxCap) balance = maxCap;
+      if (day % 7 === 0) points.push({ date: new Date(cur), balance: parseFloat(balance.toFixed(2)) });
+    }
+
+    let b2 = startBalance, finalMaxOut = null;
+    for (let day = 1; day <= scanDays; day++) {
+      const cur = addDays(anchorDate, day);
+      b2 += weeklyRate / 7;
+      if (vacMap[toISO(cur)]) { b2 -= vacMap[toISO(cur)]; if (b2 < 0) b2 = 0; }
+      if (b2 >= maxCap) { b2 = maxCap; if (!finalMaxOut) finalMaxOut = new Date(cur); }
+      else finalMaxOut = null;
+    }
+
+    return { points, maxOutDate: finalMaxOut };
+  }, [stubDate, stubHours, annualHours, vacations]);
+
+  function addVacation() {
+    if (!newStart || !newEnd) return;
+    const s = parseDate(newStart), e = parseDate(newEnd);
+    if (!s || !e || e < s) return;
+    const days = countWeekdays(s, e);
+    setVacations(prev => [...prev, { id: Date.now(), label: newLabel || "Vacation", start: newStart, end: newEnd, hours: days * 8 }]);
+    setNewStart(""); setNewEnd(""); setNewLabel("");
+  }
+
+  function removeVacation(id) { setVacations(prev => prev.filter(v => v.id !== id)); }
+
+  const maxOutDate = result?.maxOutDate;
+  const points = result?.points || [];
+  const step = Math.max(1, Math.floor(points.length / 80));
+  const cp = points.filter((_, i) => i % step === 0 || i === points.length - 1);
+
+  const W = 560, H = 210, PL = 50, PB = 30, PT = 18, PR = 24;
+  const iW = W - PL - PR, iH = H - PB - PT;
+  const maxVal = Math.max(...cp.map(p => p.balance), maxCap) * 1.1;
+  const cx = i => PL + (i / Math.max(cp.length - 1, 1)) * iW;
+  const cy = v => PT + iH - (v / maxVal) * iH;
+  const capY = cy(maxCap);
+  const polyline = cp.map((p, i) => `${cx(i).toFixed(1)},${cy(p.balance).toFixed(1)}`).join(" ");
+  const area = `${PL},${(PT+iH).toFixed(1)} ` + cp.map((p,i) => `${cx(i).toFixed(1)},${cy(p.balance).toFixed(1)}`).join(" ") + ` ${cx(cp.length-1).toFixed(1)},${(PT+iH).toFixed(1)}`;
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ v: f * maxVal, y: cy(f * maxVal) }));
+  const xLabels = [0, 0.2, 0.4, 0.6, 0.8, 1].map(f => {
+    const idx = Math.round(f * (cp.length - 1));
+    return { i: idx, label: cp[idx]?.date.toLocaleDateString("en-US", { month: "short", year: "2-digit" }) || "" };
+  });
+  let maxOutIdx = -1;
+  if (maxOutDate) {
+    let closest = Infinity;
+    cp.forEach((p, i) => { const d = Math.abs(p.date - maxOutDate); if (d < closest) { closest = d; maxOutIdx = i; } });
+  }
+  const vacBands = vacations.map(v => {
+    const s = parseDate(v.start), e = parseDate(v.end);
+    if (!s || !e || !points.length) return null;
+    const last = points[points.length - 1].date;
+    const span = last - anchorDate || 1;
+    const x1 = PL + Math.max(0, (s - anchorDate) / span) * iW;
+    const x2 = PL + Math.min(1, (addDays(e, 1) - anchorDate) / span) * iW;
+    return { x1, x2: Math.max(x1 + 2, x2) };
+  }).filter(Boolean);
+
+  const lbl = { fontSize: 11, color: C.muted, display: "block", marginBottom: 6, letterSpacing: "0.09em", textTransform: "uppercase" };
+  const cardStyle = { background: C.card, border: `1px solid ${C.border}`, borderRadius: 8 };
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", padding: "2.5rem 1.5rem" }}>
+      <div style={{ maxWidth: 700, margin: "0 auto" }}>
+
+        {/* Header */}
+        <div style={{ marginBottom: "2.5rem" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 28, color: C.accent, letterSpacing: "0.03em", marginBottom: 5, fontWeight: 400 }}>Vacation Accrual</div>
+              <div style={{ fontSize: 13, color: C.muted, letterSpacing: "0.04em" }}>Balance projection & max-out tracker</div>
+            </div>
+            <div style={{ fontSize: 11, color: savedFlash ? C.accent : C.hint, letterSpacing: "0.08em", marginTop: 6, transition: "color 0.3s" }}>
+              {savedFlash ? "● SAVED" : "● AUTO-SAVED"}
+            </div>
+          </div>
+          <div style={{ height: 1, background: `linear-gradient(to right, ${C.accent}, transparent)`, marginTop: "1.25rem" }} />
+        </div>
+
+        {/* Inputs */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16, marginBottom: "1.75rem" }}>
+          <div><span style={lbl}>Last pay stub date</span><input type="date" value={stubDate} onChange={e => setStubDate(e.target.value)} /></div>
+          <div><span style={lbl}>Balance on stub (hrs)</span><input type="number" min="0" value={stubHours} onChange={e => setStubHours(e.target.value)} placeholder="80" /></div>
+          <div><span style={lbl}>Annual accrual (hrs)</span><input type="number" min="1" value={annualHours} onChange={e => setAnnualHours(e.target.value)} placeholder="120" /></div>
+        </div>
+
+        {/* Stat cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: "2rem" }}>
+          {[
+            { lbl: "Weekly accrual", val: `${weeklyRate.toFixed(2)} hrs`, hi: false },
+            { lbl: "Max cap (1.5×)", val: `${maxCap.toFixed(0)} hrs`, hi: false },
+            { lbl: "Max-out date", val: maxOutDate ? fmtDate(maxOutDate) : "Beyond 18 months", hi: !!maxOutDate },
+          ].map((c, i) => (
+            <div key={i} style={{ ...cardStyle, padding: "16px 18px", ...(c.hi ? { borderLeftWidth: 3, borderLeftColor: C.accent } : {}) }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, letterSpacing: "0.09em", textTransform: "uppercase" }}>{c.lbl}</div>
+              <div style={{ fontSize: 18, color: c.hi ? C.accent : C.text, fontWeight: 400 }}>{c.val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Chart */}
+        {cp.length > 1 && (
+          <div style={{ ...cardStyle, padding: "1.25rem 1.25rem 0.75rem", marginBottom: "2rem" }}>
+            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }}>
+              <defs>
+                <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={C.accent} stopOpacity="0.28" />
+                  <stop offset="100%" stopColor={C.accent} stopOpacity="0.02" />
+                </linearGradient>
+              </defs>
+              {vacBands.map((b, i) => <rect key={i} x={b.x1} y={PT} width={b.x2-b.x1} height={iH} fill={C.accent} fillOpacity="0.07" />)}
+              {yTicks.map((t, i) => (
+                <g key={i}>
+                  <line x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke={C.border} strokeWidth="0.5" />
+                  <text x={PL-7} y={t.y+4} textAnchor="end" fontSize="10" fill={C.hint}>{Math.round(t.v)}</text>
+                </g>
+              ))}
+              <line x1={PL} x2={W-PR} y1={capY} y2={capY} stroke={C.danger} strokeWidth="1.2" strokeDasharray="5 4" />
+              <text x={W-PR+4} y={capY+4} fontSize="10" fill={C.danger}>cap</text>
+              <polyline points={area} fill="url(#ag)" stroke="none" />
+              <polyline points={polyline} fill="none" stroke={C.accent} strokeWidth="2" strokeLinejoin="round" />
+              {xLabels.map(l => <text key={l.i} x={cx(l.i)} y={H-4} textAnchor="middle" fontSize="10" fill={C.hint}>{l.label}</text>)}
+              {maxOutIdx >= 0 && (
+                <g>
+                  <line x1={cx(maxOutIdx)} x2={cx(maxOutIdx)} y1={PT} y2={PT+iH} stroke={C.accent} strokeWidth="1" strokeDasharray="4 3" />
+                  <circle cx={cx(maxOutIdx)} cy={cy(maxCap)} r="4" fill={C.card} stroke={C.accent} strokeWidth="2" />
+                </g>
+              )}
+            </svg>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11, color: C.muted, marginTop: 8, paddingBottom: 2, letterSpacing: "0.07em" }}>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:10, borderRadius:2, background:C.accent, display:"inline-block" }}></span>BALANCE</span>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:2, background:C.danger, display:"inline-block" }}></span>CAP</span>
+              {vacations.length > 0 && <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:10, borderRadius:2, background:C.accent, opacity:0.25, display:"inline-block" }}></span>VACATION</span>}
+              {maxOutDate && <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:2, background:C.accent, display:"inline-block" }}></span>MAX-OUT</span>}
+            </div>
+          </div>
+        )}
+
+        {/* Divider */}
+        <div style={{ borderTop: `1px solid ${C.border}`, margin: "0 0 1.75rem" }} />
+
+        {/* Planned vacations header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1.25rem" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.accent, display: "inline-block" }}></span>
+          <span style={{ fontSize: 12, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase" }}>Planned Vacations</span>
+        </div>
+
+        {/* Add vacation form */}
+        <div style={{ ...cardStyle, padding: "1.25rem", marginBottom: "1.25rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 12, alignItems: "end" }}>
+            <div><span style={lbl}>Label (optional)</span><input type="text" value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="e.g. Summer trip" /></div>
+            <div><span style={lbl}>Start date</span><input type="date" value={newStart} onChange={e => setNewStart(e.target.value)} /></div>
+            <div><span style={lbl}>End date</span><input type="date" value={newEnd} onChange={e => setNewEnd(e.target.value)} /></div>
+            <button
+              onClick={addVacation}
+              style={{ background: C.accent, color: C.bg, border: "none", borderRadius: 6, padding: "9px 18px", fontSize: 13, letterSpacing: "0.05em", whiteSpace: "nowrap", fontWeight: 400 }}
+            >Add trip</button>
+          </div>
+        </div>
+
+        {/* Vacation list */}
+        {vacations.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.hint, fontStyle: "italic", paddingLeft: 2 }}>No vacations planned yet — chart shows raw accrual.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {vacations.map(v => (
+              <div key={v.id} style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px" }}>
+                <div>
+                  <div style={{ fontSize: 15, color: C.text, marginBottom: 4 }}>{v.label}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>
+                    {fmtDate(parseDate(v.start))} – {fmtDate(parseDate(v.end))} · <span style={{ color: C.accent }}>{v.hours} hrs</span> ({v.hours / 8} days)
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeVacation(v.id)}
+                  onMouseEnter={() => setRemoveHover(v.id)}
+                  onMouseLeave={() => setRemoveHover(null)}
+                  style={{ background: removeHover === v.id ? C.dangerDim : "none", border: `1px solid ${removeHover === v.id ? C.danger : C.border}`, borderRadius: 6, color: removeHover === v.id ? C.danger : C.muted, padding: "6px 8px", display: "flex", alignItems: "center", transition: "all 0.2s" }}
+                  title="Remove"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: "3rem", paddingTop: "1.25rem", borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.hint, textAlign: "center", letterSpacing: "0.07em" }}>
+          DATA SAVED LOCALLY IN YOUR BROWSER · NOT SHARED WITH ANYONE
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+const C = {
+  bg: "#0f0f0f", surface: "#1a1a1a", card: "#222222", border: "#2e2e2e",
+  accent: "#c9a84c", accentDim: "#a07830", text: "#f0ece4",
+  muted: "#888580", hint: "#555250", danger: "#c0392b",
+};
+
+function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n); return d; }
+function isWeekday(d) { const w = d.getDay(); return w !== 0 && w !== 6; }
+function countWeekdays(s, e) {
+  let n = 0, cur = new Date(s); cur.setHours(0,0,0,0);
+  const end = new Date(e); end.setHours(0,0,0,0);
+  while (cur <= end) { if (isWeekday(cur)) n++; cur = addDays(cur, 1); }
+  return n;
+}
+function fmtDate(d) { return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"; }
+function toISO(d) { return d.toISOString().split("T")[0]; }
+function parseDate(s) { if (!s) return null; const d = new Date(s + "T00:00:00"); return isNaN(d) ? null : d; }
+
+const STORAGE_KEY = "vac_accrual_v1";
+function load() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || null; } catch { return null; } }
+function save(data) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {} }
+
+function App() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const saved = load();
+
+  const [stubDate, setStubDate] = useState(saved?.stubDate || toISO(today));
+  const [stubHours, setStubHours] = useState(saved?.stubHours || "80");
+  const [annualHours, setAnnualHours] = useState(saved?.annualHours || "120");
+  const [vacations, setVacations] = useState(saved?.vacations || []);
+  const [newStart, setNewStart] = useState("");
+  const [newEnd, setNewEnd] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    save({ stubDate, stubHours, annualHours, vacations });
+    setSavedFlash(true);
+    const t = setTimeout(() => setSavedFlash(false), 1200);
+    return () => clearTimeout(t);
+  }, [stubDate, stubHours, annualHours, vacations]);
+
+  const annual = parseFloat(annualHours) || 0;
+  const maxCap = annual * 1.5;
+  const weeklyRate = annual / 52;
+  const startBalance = parseFloat(stubHours) || 0;
+  const anchorDate = parseDate(stubDate) || today;
+
+  const result = useMemo(() => {
+    if (!annual) return null;
+    const vacEvents = vacations
+      .map(v => ({ ...v, startD: parseDate(v.start), endD: parseDate(v.end) }))
+      .filter(v => v.startD && v.endD && v.endD >= v.startD);
+
+    const vacMap = {};
+    for (const v of vacEvents) {
+      let cur = new Date(v.startD);
+      while (cur <= v.endD) {
+        if (isWeekday(cur)) { const k = toISO(cur); vacMap[k] = (vacMap[k] || 0) + 8; }
+        cur = addDays(cur, 1);
+      }
+    }
+
+    let balance = startBalance, trueMaxOut = null;
+    const points = [{ date: new Date(anchorDate), balance: parseFloat(balance.toFixed(2)) }];
+    const scanDays = 548;
+
+    for (let day = 1; day <= scanDays; day++) {
+      const cur = addDays(anchorDate, day);
+      balance += weeklyRate / 7;
+      if (vacMap[toISO(cur)]) { balance -= vacMap[toISO(cur)]; if (balance < 0) balance = 0; }
+      if (balance >= maxCap) { balance = maxCap; if (!trueMaxOut) trueMaxOut = new Date(cur); }
+      else trueMaxOut = null;
+      if (day % 7 === 0) points.push({ date: new Date(cur), balance: parseFloat(balance.toFixed(2)) });
+    }
+
+    let b2 = startBalance, finalMaxOut = null;
+    for (let day = 1; day <= scanDays; day++) {
+      const cur = addDays(anchorDate, day);
+      b2 += weeklyRate / 7;
+      if (vacMap[toISO(cur)]) { b2 -= vacMap[toISO(cur)]; if (b2 < 0) b2 = 0; }
+      if (b2 >= maxCap) { b2 = maxCap; if (!finalMaxOut) finalMaxOut = new Date(cur); }
+      else finalMaxOut = null;
+    }
+
+    return { points, maxOutDate: finalMaxOut };
+  }, [stubDate, stubHours, annualHours, vacations]);
+
+  function addVacation() {
+    if (!newStart || !newEnd) return;
+    const s = parseDate(newStart), e = parseDate(newEnd);
+    if (!s || !e || e < s) return;
+    const days = countWeekdays(s, e);
+    setVacations(prev => [...prev, { id: Date.now(), label: newLabel || "Vacation", start: newStart, end: newEnd, hours: days * 8 }]);
+    setNewStart(""); setNewEnd(""); setNewLabel("");
+  }
+
+  function removeVacation(id) { setVacations(prev => prev.filter(v => v.id !== id)); }
+
+  const maxOutDate = result?.maxOutDate;
+  const points = result?.points || [];
+  const step = Math.max(1, Math.floor(points.length / 80));
+  const cp = points.filter((_, i) => i % step === 0 || i === points.length - 1);
+
+  const W = 560, H = 200, PL = 48, PB = 28, PT = 16, PR = 20;
+  const iW = W - PL - PR, iH = H - PB - PT;
+  const maxVal = Math.max(...cp.map(p => p.balance), maxCap) * 1.1;
+  const cx = i => PL + (i / Math.max(cp.length - 1, 1)) * iW;
+  const cy = v => PT + iH - (v / maxVal) * iH;
+  const capY = cy(maxCap);
+  const polyline = cp.map((p, i) => `${cx(i).toFixed(1)},${cy(p.balance).toFixed(1)}`).join(" ");
+  const area = `${PL},${(PT+iH).toFixed(1)} ` + cp.map((p,i) => `${cx(i).toFixed(1)},${cy(p.balance).toFixed(1)}`).join(" ") + ` ${cx(cp.length-1).toFixed(1)},${(PT+iH).toFixed(1)}`;
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ v: f * maxVal, y: cy(f * maxVal) }));
+  const xLabels = [0, 0.2, 0.4, 0.6, 0.8, 1].map(f => {
+    const idx = Math.round(f * (cp.length - 1));
+    return { i: idx, label: cp[idx]?.date.toLocaleDateString("en-US", { month: "short", year: "2-digit" }) || "" };
+  });
+  let maxOutIdx = -1;
+  if (maxOutDate) {
+    let closest = Infinity;
+    cp.forEach((p, i) => { const d = Math.abs(p.date - maxOutDate); if (d < closest) { closest = d; maxOutIdx = i; } });
+  }
+  const vacBands = vacations.map(v => {
+    const s = parseDate(v.start), e = parseDate(v.end);
+    if (!s || !e || !points.length) return null;
+    const last = points[points.length - 1].date;
+    const span = last - anchorDate || 1;
+    const x1 = PL + Math.max(0, (s - anchorDate) / span) * iW;
+    const x2 = PL + Math.min(1, (addDays(e, 1) - anchorDate) / span) * iW;
+    return { x1, x2: Math.max(x1 + 2, x2) };
+  }).filter(Boolean);
+
+  const lbl = { fontSize: 11, color: C.muted, display: "block", marginBottom: 5, letterSpacing: "0.08em", textTransform: "uppercase" };
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", padding: "2rem 1.25rem" }}>
+      <div style={{ maxWidth: 680, margin: "0 auto" }}>
+
+        {/* Header */}
+        <div style={{ marginBottom: "2rem" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 26, color: C.accent, letterSpacing: "0.04em", marginBottom: 4 }}>Vacation Accrual</div>
+              <div style={{ fontSize: 13, color: C.muted, letterSpacing: "0.04em" }}>Balance projection & max-out tracker</div>
+            </div>
+            <div style={{ fontSize: 11, color: savedFlash ? C.accent : C.hint, letterSpacing: "0.08em", marginTop: 6, transition: "color 0.3s" }}>
+              {savedFlash ? "● SAVED" : "● AUTO-SAVED"}
+            </div>
+          </div>
+          <div style={{ height: 1, background: `linear-gradient(to right, ${C.accent}, transparent)`, marginTop: "1rem" }} />
+        </div>
+
+        {/* Inputs */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: "1.5rem" }}>
+          <div><span style={lbl}>Last pay stub date</span><input type="date" value={stubDate} onChange={e => setStubDate(e.target.value)} /></div>
+          <div><span style={lbl}>Balance on stub (hrs)</span><input type="number" min="0" value={stubHours} onChange={e => setStubHours(e.target.value)} placeholder="80" /></div>
+          <div><span style={lbl}>Annual accrual (hrs)</span><input type="number" min="1" value={annualHours} onChange={e => setAnnualHours(e.target.value)} placeholder="120" /></div>
+        </div>
+
+        {/* Stat cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: "1.75rem" }}>
+          {[
+            { lbl: "Weekly accrual", val: `${weeklyRate.toFixed(2)} hrs` },
+            { lbl: "Max cap (1.5×)", val: `${maxCap.toFixed(0)} hrs` },
+            { lbl: "Max-out date", val: maxOutDate ? fmtDate(maxOutDate) : "Beyond 18 months", accent: !!maxOutDate },
+          ].map(c => (
+            <div key={c.lbl} style={{ background: C.card, border: `1px solid ${c.accent ? C.accentDim : C.border}`, borderRadius: 4, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}>{c.lbl}</div>
+              <div style={{ fontSize: 17, color: c.accent ? C.accent : C.text }}>{c.val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Chart */}
+        {cp.length > 1 && (
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 4, padding: "1rem 1rem 0.5rem", marginBottom: "1.75rem" }}>
+            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }}>
+              <defs>
+                <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={C.accent} stopOpacity="0.25" />
+                  <stop offset="100%" stopColor={C.accent} stopOpacity="0.02" />
+                </linearGradient>
+              </defs>
+              {vacBands.map((b, i) => <rect key={i} x={b.x1} y={PT} width={b.x2 - b.x1} height={iH} fill={C.accent} fillOpacity="0.07" />)}
+              {yTicks.map((t, i) => (
+                <g key={i}>
+                  <line x1={PL} x2={W-PR} y1={t.y} y2={t.y} stroke={C.border} strokeWidth="0.5" />
+                  <text x={PL-6} y={t.y+4} textAnchor="end" fontSize="10" fill={C.hint}>{Math.round(t.v)}</text>
+                </g>
+              ))}
+              <line x1={PL} x2={W-PR} y1={capY} y2={capY} stroke={C.danger} strokeWidth="1" strokeDasharray="4 3" />
+              <text x={W-PR+3} y={capY+4} fontSize="10" fill={C.danger}>cap</text>
+              <polyline points={area} fill="url(#ag)" stroke="none" />
+              <polyline points={polyline} fill="none" stroke={C.accent} strokeWidth="1.5" strokeLinejoin="round" />
+              {xLabels.map(l => <text key={l.i} x={cx(l.i)} y={H-6} textAnchor="middle" fontSize="10" fill={C.hint}>{l.label}</text>)}
+              {maxOutIdx >= 0 && (
+                <g>
+                  <line x1={cx(maxOutIdx)} x2={cx(maxOutIdx)} y1={PT} y2={PT+iH} stroke={C.accent} strokeWidth="1" strokeDasharray="3 2" />
+                  <circle cx={cx(maxOutIdx)} cy={cy(maxCap)} r="3.5" fill={C.accent} />
+                </g>
+              )}
+            </svg>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11, color: C.muted, marginTop: 6, paddingBottom: 4, letterSpacing: "0.06em" }}>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:10, borderRadius:2, background:C.accent, display:"inline-block" }}></span>BALANCE</span>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:2, background:C.danger, display:"inline-block" }}></span>CAP</span>
+              {vacations.length > 0 && <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:10, borderRadius:2, background:C.accent, opacity:0.3, display:"inline-block" }}></span>VACATION</span>}
+              {maxOutDate && <span style={{ display:"flex", alignItems:"center", gap:5 }}><span style={{ width:10, height:2, background:C.accent, display:"inline-block" }}></span>MAX-OUT</span>}
+            </div>
+          </div>
+        )}
+
+        {/* Divider */}
+        <div style={{ borderTop: `1px solid ${C.border}`, margin: "1.5rem 0" }} />
+
+        {/* Planned vacations */}
+        <div style={{ fontSize: 13, color: C.accent, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "1rem" }}>Planned Vacations</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end", marginBottom: "1.25rem" }}>
+          <div><span style={lbl}>Label (optional)</span><input type="text" value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="e.g. Summer trip" /></div>
+          <div><span style={lbl}>Start date</span><input type="date" value={newStart} onChange={e => setNewStart(e.target.value)} /></div>
+          <div><span style={lbl}>End date</span><input type="date" value={newEnd} onChange={e => setNewEnd(e.target.value)} /></div>
+          <button onClick={addVacation} style={{ background: C.accent, color: C.bg, border: "none", borderRadius: 4, padding: "8px 16px", fontSize: 13, letterSpacing: "0.06em", whiteSpace: "nowrap" }}>Add</button>
+        </div>
+
+        {vacations.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.hint, fontStyle: "italic" }}>No vacations added yet — chart shows raw accrual.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {vacations.map(v => (
+              <div key={v.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 4, padding: "10px 14px" }}>
+                <div>
+                  <div style={{ fontSize: 14, marginBottom: 3, color: C.text }}>{v.label}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>
+                    {fmtDate(parseDate(v.start))} – {fmtDate(parseDate(v.end))} · <span style={{ color: C.accent }}>{v.hours} hrs</span> ({v.hours / 8} days)
+                  </div>
+                </div>
+                <button onClick={() => removeVacation(v.id)} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 4, color: C.muted, fontSize: 11, padding: "4px 10px", letterSpacing: "0.06em" }}>REMOVE</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.hint, textAlign: "center", letterSpacing: "0.06em" }}>
+          DATA IS SAVED LOCALLY IN YOUR BROWSER · NOT SHARED WITH ANYONE
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
